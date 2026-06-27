@@ -1,0 +1,11 @@
+# CMake build directories
+/build/
+/out/
+
+# CMake cache and generated files
+CMakeCache.txt
+CMakeFiles/
+CMakePresets.json
+
+# IDE specific files
+.vscode/
