@@ -36,3 +36,11 @@ set_target_properties(MapTest PROPERTIES SUFFIX ".html")
         # Магия упаковки: берем папку RESOURCES_DIR и монтируем её контент в корень /
         "--embed-file d:\\MF\\Em_test\\plast@/"
     )
+add_custom_command(
+    TARGET MapTest POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_BINARY_DIR}/MapTest.js"
+        "${CMAKE_BINARY_DIR}/MapTest.wasm"
+        "${CMAKE_CURRENT_SOURCE_DIR}"
+    COMMENT "Copying prog to root directory"
+)

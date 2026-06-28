@@ -15,6 +15,7 @@ struct fontSprite {
 };
 
 struct PointD { double x; double y; };
+struct Point { int x; int y; };
 struct WellDevRec  { double dn; double dw;double nw;double ng;int hourWorkInput;int hourWorkOutput;};
 
 struct WellInfo { 
@@ -24,17 +25,29 @@ struct WellInfo {
     std::vector<fontSprite> sprites;
     std::vector<std::string> labels;
 };
+struct MouseState { 
+    Point pos,click_pos,last_pos; 
+    bool leftButtonDown; 
+    bool rightButtonDown; 
+};
+struct ColorScaleItem  { double value; SDL_Color color; };
+
 
 typedef std::vector<PointD> PathD;
 typedef std::vector< PathD > PathsD;
 typedef std::vector<std::vector<int>> PathType;
 typedef std::vector<WellInfo> WellsType;
+typedef std::vector<ColorScaleItem> ColorScale;
 SDL_Window* window = nullptr;
 SDL_Renderer* renderer = nullptr;
     PathsD paths,conts,iso_polygons,iso_paths;
     PathType pathtypes,conttypes,isotypes,isopathtypes;
     PointD startPoint;
     WellsType wells;
+    MouseState mouseState;  
+    Point imageOffset={0,0};
+    double scale=1.0;
+    ColorScale colorScale;
 
 bool is_digits(const std::string& str) {
     return !str.empty() && std::all_of(str.begin(), str.end(), [](unsigned char c) {
@@ -56,6 +69,38 @@ std::string trim(const std::string& str) {
     // Extract and return the substring
     return str.substr(start, end - start + 1);
 }
+ SDL_Color GetSDLColor(const int color) {
+     SDL_Color sdlColor;
+        sdlColor.b = (color >> 16) & 0xFF;
+        sdlColor.g = (color >> 8) & 0xFF;
+        sdlColor.r = color & 0xFF;
+        sdlColor.a = 255;
+        return sdlColor;
+}
+int loadColorScale(ColorScale& colorScale,const char* filename) {
+    std::ifstream file(filename);
+    if (!file.is_open()) {
+        std::cerr << "Error: Unable to open file " << filename << std::endl;
+        return 1; // Return error code
+    }
+    ColorScaleItem current_item;
+    int c=0;
+    std::string line,buf;
+    while (std::getline(file,line )) {
+        std::stringstream ss(line);
+        std::getline(ss, buf, ';');
+        current_item.value=std::stod(buf);
+        std::getline(ss, buf, '\n');
+        c=std::stoi(buf);
+        current_item.color= GetSDLColor(c);
+//        current_item.color.b=c>>16;
+//        current_item.color.g=(c>>8)&0xff;
+//        current_item.color.r=c&0xff;
+        colorScale.push_back(current_item);
+    }    
+    file.close();
+    return 0; // Success 
+}
 int loadWellsFile(WellsType& wells,const char* filename) {
     std::ifstream file(filename);
     std::string line;
@@ -68,6 +113,8 @@ int loadWellsFile(WellsType& wells,const char* filename) {
     while (std::getline(file,line)){
         std::stringstream ss(line);
         fontSprite current_sprite;
+        current_well.sprites.clear();
+        current_well.labels.clear();
         std::getline(ss, current_well.NC, ';');
         std::getline(ss, current_well.clust, ';');
         std::getline(ss, buf, ';');current_well.coord.x=std::stod(buf);
@@ -79,7 +126,9 @@ int loadWellsFile(WellsType& wells,const char* filename) {
         std::getline(ss, buf, ';');current_sprite.center_color=std::stoi(buf);
         current_well.sprites.push_back(current_sprite);
         for (int i=0;i<3;i++) {
-            std::getline(ss, buf, ';');current_well.labels.push_back(buf);
+            std::getline(ss, buf, ';');
+            buf=trim(buf);
+            if (buf.size()>0) current_well.labels.push_back(buf);
         }
         WellDevRec current_dev;
         std::getline(ss, buf, ';');current_dev.dn=std::stod(buf);
@@ -138,8 +187,8 @@ int loadPaths(PathsD& paths, PathType& pathtypes,const char* filename) {
     return 0; // Success 
 }
 void toScreen(const PointD& dot,int *x,int *y) {
-    *x=(int)((dot.y-startPoint.y)/10+100);
-    *y=(int)(2000-(dot.x-startPoint.x)/10);
+    *x=(int)((dot.y-startPoint.y)*scale/10+100)+imageOffset.x;
+    *y=(int)(2000-(dot.x-startPoint.x)*scale/10)+imageOffset.y;
 } 
 void drawPath(const PathsD& paths,const PathType& pathtypes) {
     std::vector<SDL_Point> vertices;
@@ -179,7 +228,9 @@ void fillPath(const PathsD& paths,const PathType& pathtypes) {
 //            vx=(vx>0)?vx:0;
 //            vy=(vy>0)?vy:0;
             int vx,vy;toScreen(paths[i][j],&vx,&vy);
-            SDL_Vertex dot={{(float)vx, float(vy)}, {(unsigned char)(((pathtypes[i][0]))*20 % 255),210 ,0 ,255},   {0.0f, 0.0f}};
+            int level=pathtypes[i][0];
+            if (level>(colorScale.size()-1)) {level=colorScale.size()-1;}
+            SDL_Vertex dot={{(float)vx, float(vy)}, colorScale[level].color,   {0.0f, 0.0f}};
             vertices.push_back(dot);
             if (j>1){indices.push_back(j-2);indices.push_back(j-1);indices.push_back(j);}
             
@@ -219,7 +270,7 @@ void DrawFilledCircle(SDL_Renderer* renderer, int centreX, int centreY, int radi
         }
     }
 }
-void renderText(const std::string& message, int x, int y, TTF_Font* font, SDL_Color color, SDL_Renderer* renderer) {
+void renderText(const std::string& message, int x, int y, TTF_Font* font, SDL_Color color, SDL_Renderer* renderer,Point& textSize ) {
     SDL_Surface* textSurface = TTF_RenderUTF8_Blended (font, message.c_str(), color);
     if (!textSurface) {
         std::cerr << "Unable to render text surface! SDL_ttf Error: " << TTF_GetError() << std::endl;
@@ -233,6 +284,7 @@ void renderText(const std::string& message, int x, int y, TTF_Font* font, SDL_Co
     }
     int textWidth = textSurface->w;
     int textHeight = textSurface->h;
+    textSize.x=textWidth;textSize.y=textHeight;
     SDL_Rect destRect = { x, y, textWidth, textHeight };
     SDL_RenderCopy(renderer, textTexture, nullptr, &destRect);
     SDL_FreeSurface(textSurface);
@@ -240,16 +292,91 @@ void renderText(const std::string& message, int x, int y, TTF_Font* font, SDL_Co
 }
 void drawWells(const WellsType& wells) {
     TTF_Font* font = TTF_OpenFont("arial.ttf", 12);
+    TTF_Font* spritesfont = TTF_OpenFont("FWELLS__.ttf", 30);
+    Point textSize;
     for (int i = 0; i < wells.size(); i++) {
         int vx,vy;toScreen(wells[i].coord,&vx,&vy);
         SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
-        DrawFilledCircle(renderer, vx, vy, 4);
-        renderText(wells[i].NC, vx+5, vy-18, font, {0, 0, 0, 255}, renderer);
-    }  
+//        DrawFilledCircle(renderer, vx, vy, 4);
+        char buf[2]=" ";
+        for (int j = wells[i].sprites.size()-1; j >=0 ; j--){ 
+            buf[0]=wells[i].sprites[j].code;
+            renderText(buf, vx-22, vy-15, spritesfont,  GetSDLColor(wells[i].sprites[j].color), renderer,textSize);
+        }
+        renderText(wells[i].NC, vx+5, vy-18, font, {0, 0, 0, 255}, renderer,textSize);
+        if (wells[i].labels.size()>0) {
+            SDL_RenderDrawLine(renderer, vx+15, vy, vx+5+textSize.x, vy);
+            for (int j = 0; j < wells[i].labels.size(); j++) renderText(wells[i].labels[j], vx+5, vy+textSize.y*j, font, {0, 0, 0, 255}, renderer,textSize);
+        } 
+    }
+    TTF_CloseFont(spritesfont);
     TTF_CloseFont(font);
-}       
+}      
+void move_image(int dx,int dy) {
+    imageOffset.x+=dx;imageOffset.y+=dy;
+}
+void scale_image(int dx,int dy) {
+    scale+=dy/100.0;
+    scale=std::max(0.001,scale);
+    scale=std::min(100.0,scale);
+}
+void poll_mouse() {
+     SDL_Event event;
+    // Poll all pending events for the current frame
+    while (SDL_PollEvent(&event)) {
+        switch (event.type) {
+            // 1. Mouse Movement
+            case SDL_MOUSEMOTION:
+                // Relative motion (useful for first-person cameras)
+                // event.motion.xrel, event.motion.yrel
+                
+                // Absolute positions on the canvas
+                mouseState.pos.x = event.motion.x;
+                mouseState.pos.y = event.motion.y;
+                if (mouseState.leftButtonDown) {
+                    move_image(event.motion.x-mouseState.last_pos.x,event.motion.y-mouseState.last_pos.y);
+                    mouseState.last_pos = {event.motion.x, event.motion.y};
+                }
+                if (mouseState.rightButtonDown) {
+                    scale_image(event.motion.x-mouseState.last_pos.x,event.motion.y-mouseState.last_pos.y);
+                    mouseState.last_pos = {event.motion.x, event.motion.y};
+                }
+                break;
+
+            // 2. Mouse Click Press
+            case SDL_MOUSEBUTTONDOWN:
+                if (event.button.button == SDL_BUTTON_LEFT) {
+                    mouseState.leftButtonDown = true;
+                }
+                if (event.button.button == SDL_BUTTON_RIGHT) {
+                    mouseState.rightButtonDown = true;
+                }
+                mouseState.click_pos = {event.button.x, event.button.y};
+                mouseState.last_pos = {event.button.x, event.button.y};
+                break;
+
+            // 3. Mouse Click Release
+            case SDL_MOUSEBUTTONUP:
+                if (event.button.button == SDL_BUTTON_LEFT) {
+                    mouseState.leftButtonDown = false;
+                    move_image(event.button.x-mouseState.last_pos.x,event.button.y-mouseState.last_pos.y);
+                }
+                if (event.button.button == SDL_BUTTON_RIGHT) {
+                    mouseState.rightButtonDown = false;
+                    scale_image(event.button.x-mouseState.last_pos.x,event.button.y-mouseState.last_pos.y);
+                }
+                break;
+
+            // 4. Mouse Wheel / Scroll
+            case SDL_MOUSEWHEEL:
+                scale_image(0,event.wheel.y*2);
+                break;
+        }
+    }
+}
 void main_loop() {
 //    std::vector<SDL_Vertex> vertices;
+    poll_mouse();    
     SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
     SDL_RenderClear(renderer);
     fillPath(iso_polygons,isotypes);
@@ -270,6 +397,7 @@ int main(int argc, char** argv)
     if (loadPaths(paths, pathtypes,"/Isolines.txt")) return 1; // Error 
     if (loadPaths(conts, conttypes,"/Conturs.txt")) return 1; // Error 
     if (loadWellsFile(wells,"/Wells.txt")) return 1; // Error 
+    if (loadColorScale(colorScale,"/ColorScale.txt")) return 1; // Error 
     for (int i = 0; i < pathtypes.size(); i++) {pathtypes[i][0]=1000;}
   //  iso_polygons.clear();
   //  for (int i = 0; i < paths.size(); i++) {
