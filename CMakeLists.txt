@@ -10,7 +10,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Список исходных файлов
 set(PROJECT_SOURCES
-    hw.cpp
+    main.cpp
     gpc.c
 )
 
