@@ -9,3 +9,5 @@ CMakePresets.json
 
 # IDE specific files
 .vscode/
+#Models
+/models/

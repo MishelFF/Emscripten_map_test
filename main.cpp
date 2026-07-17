@@ -445,7 +445,6 @@ int main(int argc, char** argv)
         for (int j = 0; j < iso_polygons[i].size(); j++)  std::cerr << iso_polygons[i][j].x<< "   "<<iso_polygons[i][j].y << std::endl;
     }
 //    return 0;
-
     SDL_Init(SDL_INIT_VIDEO);
     TTF_Init();
     SDL_CreateWindowAndRenderer(1640, 2000, 0, &window, &renderer);
