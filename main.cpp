@@ -188,7 +188,7 @@ int loadPaths(PathsD& paths, PathType& pathtypes,const char* filename) {
 }
 void toScreen(const PointD& dot,int *x,int *y) {
     *x=(int)((dot.y-startPoint.y)*scale/10+100)+imageOffset.x;
-    *y=(int)(2000-(dot.x-startPoint.x)*scale/10)+imageOffset.y;
+    *y=(int)(1000-(dot.x-startPoint.x)*scale/10)+imageOffset.y;
 } 
 void drawPath(const PathsD& paths,const PathType& pathtypes) {
     std::vector<SDL_Point> vertices;
@@ -447,7 +447,7 @@ int main(int argc, char** argv)
 //    return 0;
     SDL_Init(SDL_INIT_VIDEO);
     TTF_Init();
-    SDL_CreateWindowAndRenderer(1640, 2000, 0, &window, &renderer);
+    SDL_CreateWindowAndRenderer(1800, 1800, 0, &window, &renderer);
     emscripten_set_main_loop(main_loop, 0, 1);
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);

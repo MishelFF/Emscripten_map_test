@@ -1,5 +1,6 @@
 # CMake build directories
-/build/
+build/
+build-*/
 /out/
 
 # CMake cache and generated files
@@ -11,3 +12,5 @@ CMakePresets.json
 .vscode/
 #Models
 /models/
+*.ttf
+*.json
