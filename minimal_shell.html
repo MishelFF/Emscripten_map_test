@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="utf-8">
+    <title>Emscripten App</title>
+    <style>
+        body { font-family: sans-serif; text-align: center; background: #222; color: #fff; }
+        #output { width: 80%; height: 200px; margin: 20px auto; display: block; background: #000; color: #0f0; }
+        canvas { display: block; margin: 0 auto; background: #333; }
+    </style>
+</head>
+<body>
+    <h1>WebAssembly Карта</h1>
+    
+    <input type="file" id="fileLoader" onchange="uploadFile(this)">
+
+<script type='text/javascript'>
+  function uploadFile(input) {
+    const file = input.files[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = function(e) {
+      const arrayBuffer = e.target.result;
+      const uint8Array = new Uint8Array(arrayBuffer);
+
+      // 1. Выделяем память внутри WASM
+      const numBytes = uint8Array.length;
+      const dataPtr = Module._malloc(numBytes);
+
+      // 2. Копируем данные из JS-массива в память WASM
+      Module.HEAPU8.set(uint8Array, dataPtr);
+
+      // 3. Вызываем C++ функцию, передавая указатель, размер и имя файла
+      Module.ccall(
+        'process_uploaded_zip', 
+        null,                    
+        ['number', 'number'], 
+        [dataPtr, numBytes]  
+      );
+
+      // 4. Освобождаем выделенную память после обработки
+      Module._free(dataPtr);
+    };
+    
+    // Читаем файл как бинарный массив (подходит для любых файлов/картинок)
+    reader.readAsArrayBuffer(file);
+  }
+</script>
+    <!-- Элемент для графики (если используется SDL/OpenGL) -->
+    <canvas id="canvas" oncontextmenu="event.preventDefault()"></canvas>
+
+    <!-- Элемент для вывода текстовых логов (printf) -->
+    <textarea id="output" readonly></textarea>
+ 
+<script type="text/javascript">
+  var Module = {
+    print: (function() {
+      var element = document.getElementById('output');
+
+      if (element)
+        element.value = '';
+
+      return function(text) {
+        if (arguments.length > 1)
+          text = Array.prototype.slice.call(arguments).join(' ');
+
+        if (element) {
+          element.value += text + "\n";
+          element.scrollTop = element.scrollHeight;
+        }
+      };
+    })(),
+
+    printErr: (function() {
+      var element = document.getElementById('output');
+
+      return function(text) {
+        if (arguments.length > 1)
+          text = Array.prototype.slice.call(arguments).join(' ');
+
+        if (element) {
+          element.value += "[ERR] " + text + "\n";
+          element.scrollTop = element.scrollHeight;
+        }
+
+        console.error(text);
+      };
+    })(),
+
+    canvas: (function() {
+      return document.getElementById('canvas');
+    })()
+  };
+ </script>   
+    <!-- Обязательный токен: сюда Emscripten вставит тег <script> со своим JS-кодом -->
+    {{{ SCRIPT }}}
+</body>
+</html>

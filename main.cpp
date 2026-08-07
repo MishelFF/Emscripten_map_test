@@ -9,6 +9,88 @@
 #include <SDL2/SDL_ttf.h>
 #include <emscripten.h>
 #include "gpc.h"
+#include "miniz.h"
+
+
+#include <iostream>
+#include <fstream>
+#include <emscripten/emscripten.h>
+#include "miniz.h"
+
+bool g_FilesLoaded = false;
+extern "C" {
+
+EMSCRIPTEN_KEEPALIVE
+void process_uploaded_zip(uint8_t *zip_buffer, int zip_size)
+{
+    std::cout << "Архив получен. Размер: " << zip_size << " байт. Начинаем распаковку..." << std::endl;
+
+    // Инициализируем архив из буфера в памяти
+    mz_zip_archive zip_archive;
+    memset(&zip_archive, 0, sizeof(zip_archive));
+
+    if (!mz_zip_reader_init_mem(&zip_archive, zip_buffer, zip_size, 0))
+    {
+        std::cerr << "Ошибка: Не удалось прочитать ZIP-архив из памяти!" << std::endl;
+        return;
+    }
+
+    // Получаем количество файлов в архиве
+    mz_uint num_files = mz_zip_reader_get_num_files(&zip_archive);
+    std::cout << "Файлов в архиве: " << num_files << std::endl;
+
+    // Перебираем каждый файл в архиве
+    for (mz_uint i = 0; i < num_files; i++)
+    {
+        mz_zip_archive_file_stat file_stat;
+        if (!mz_zip_reader_file_stat(&zip_archive, i, &file_stat))
+        {
+            std::cerr << "Не удалось получить информацию о файле под индексом " << i << std::endl;
+            continue;
+        }
+
+        // Пропускаем директории
+        if (mz_zip_reader_is_file_a_directory(&zip_archive, i))
+        {
+            std::cout << "Директория: " << file_stat.m_filename << " (пропускаем или создаем при необходимости)" << std::endl;
+            continue;
+        }
+
+        std::cout << "Распаковка: " << file_stat.m_filename << " (" << file_stat.m_uncomp_size << " байт)" << std::endl;
+
+        // Выделяем память под распакованный файл
+        size_t uncompressed_size;
+        void *pUncomp_data = mz_zip_reader_extract_to_heap(&zip_archive, i, &uncompressed_size, 0);
+
+        if (!pUncomp_data)
+        {
+            std::cerr << "Ошибка распаковки файла: " << file_stat.m_filename << std::endl;
+            continue;
+        }
+
+        // Записываем файл в виртуальную файловую систему Emscripten (MEMFS)
+        // Теперь этот файл будет доступен для fopen() по его имени
+        std::ofstream out_file(file_stat.m_filename, std::ios::binary);
+        if (out_file.is_open())
+        {
+            out_file.write(reinterpret_cast<const char *>(pUncomp_data), uncompressed_size);
+            out_file.close();
+            std::cout << "Успешно сохранен в виртуальную ФС: " << file_stat.m_filename << std::endl;
+        }
+        else
+        {
+            std::cerr << "Не удалось сохранить файл на виртуальный диск!" << std::endl;
+        }
+
+        // Освобождаем память кучи miniz, выделенную под этот конкретный файл
+        mz_free(pUncomp_data);
+    }
+
+    mz_zip_reader_end(&zip_archive);
+    std::cout << "Распаковка завершена! Все файлы теперь доступны в среде WASM." << std::endl;
+    g_FilesLoaded=true;
+}
+}
 
 struct fontSprite { 
     unsigned int font,code,color,center_color;
@@ -83,6 +165,7 @@ int loadColorScale(ColorScale& colorScale,const char* filename) {
         std::cerr << "Error: Unable to open file " << filename << std::endl;
         return 1; // Return error code
     }
+    colorScale.clear();
     ColorScaleItem current_item;
     int c=0;
     std::string line,buf;
@@ -99,6 +182,7 @@ int loadColorScale(ColorScale& colorScale,const char* filename) {
         colorScale.push_back(current_item);
     }    
     file.close();
+    g_FilesLoaded = true; 
     return 0; // Success 
 }
 int loadWellsFile(WellsType& wells,const char* filename) {
@@ -108,6 +192,7 @@ int loadWellsFile(WellsType& wells,const char* filename) {
         std::cerr << "Error: Unable to open file " << filename << std::endl;
         return 1; // Return error code
     }
+    wells.clear();
     WellInfo current_well;
     std::string buf;
     while (std::getline(file,line)){
@@ -147,7 +232,8 @@ int loadPaths(PathsD& paths, PathType& pathtypes,const char* filename) {
         std::cerr << "Error: Unable to open file " << filename << std::endl;
         return 1; // Return error code
     }
-
+    paths.clear();
+    pathtypes.clear();
     PathD current_path;
     double x, y;
     int n=0;
@@ -374,44 +460,27 @@ void poll_mouse() {
         }
     }
 }
-void main_loop() {
-//    std::vector<SDL_Vertex> vertices;
-    poll_mouse();    
-    SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
-    SDL_RenderClear(renderer);
-    fillPath(iso_polygons,isotypes);
-    drawPath(paths,pathtypes);
-    drawPath(conts,conttypes);
-    drawWells(wells);
-    SDL_RenderPresent(renderer);
-
- }    
-int main(int argc, char** argv)
+int loadModel()
 {
-    gpc_polygon aPolygon;
-    gpc_vertex_list aVertexList;
-    gpc_tristrip aTriStrip;
-    std::vector<SDL_Point> vertices;
-
     if (loadPaths(iso_paths, isopathtypes,"/IsoPolygons.txt")) return 1; // Error 
     if (loadPaths(paths, pathtypes,"/Isolines.txt")) return 1; // Error 
     if (loadPaths(conts, conttypes,"/Conturs.txt")) return 1; // Error 
     if (loadWellsFile(wells,"/Wells.txt")) return 1; // Error 
     if (loadColorScale(colorScale,"/ColorScale.txt")) return 1; // Error 
     for (int i = 0; i < pathtypes.size(); i++) {pathtypes[i][0]=1000;}
-  //  iso_polygons.clear();
-  //  for (int i = 0; i < paths.size(); i++) {
-  //      PathD current_path;
-  //      Triangulate(paths[i], 0, current_path, true);
-  //      iso_polygons.push_back(current_path);
-  //  }
+    gpc_polygon aPolygon={};
+    gpc_vertex_list aVertexList={};
+    gpc_tristrip aTriStrip={};
+    std::vector<SDL_Point> vertices;
     std::cerr << "Input types "<< isopathtypes.size() << std::endl;
-    for (int i = 0; i < isopathtypes.size(); i++) {
+/*    for (int i = 0; i < isopathtypes.size(); i++) {
         std::cerr << "Types "<< i<<"Nums "<<isopathtypes[i].size()<<":";
         for (int j = 0; j < isopathtypes[i].size(); j++)  std::cerr <<isopathtypes[i][j]<<"  "; 
         std::cerr << std::endl;
-    }
+    }*/
     iso_polygons.clear();
+    isotypes.clear();
+    startPoint={0,0};
     int prev_poly=-1;
     aPolygon.num_contours = 0;
     int i=0;
@@ -440,14 +509,47 @@ int main(int argc, char** argv)
     }
     else i++;
     std::cerr << "Isolines polygons "<< iso_polygons.size() << std::endl;
-    for (int i = 0; i < iso_polygons.size(); i++) {
+/*    for (int i = 0; i < iso_polygons.size(); i++) {
         std::cerr << "Isoline"<< i<<"Polygons"<<iso_polygons[i].size() << std::endl;
         for (int j = 0; j < iso_polygons[i].size(); j++)  std::cerr << iso_polygons[i][j].x<< "   "<<iso_polygons[i][j].y << std::endl;
+    }*/
+    std::cerr << "Model Loaded " << std::endl;
+    return 0;
+ 
+}
+
+void main_loop() {
+//    std::vector<SDL_Vertex> vertices;
+    poll_mouse();    
+    SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
+    SDL_RenderClear(renderer);
+    fillPath(iso_polygons,isotypes);
+    drawPath(paths,pathtypes);
+    drawPath(conts,conttypes);
+    drawWells(wells);
+    SDL_RenderPresent(renderer);
+    if(g_FilesLoaded) {
+        std::cerr << "Start load model " << std::endl;
+        loadModel();
     }
+    g_FilesLoaded = false; 
+ }    
+
+int main(int argc, char** argv)
+{
+     loadModel();
+  //  iso_polygons.clear();
+  //  for (int i = 0; i < paths.size(); i++) {
+  //      PathD current_path;
+  //      Triangulate(paths[i], 0, current_path, true);
+  //      iso_polygons.push_back(current_path);
+  //  }
+
 //    return 0;
     SDL_Init(SDL_INIT_VIDEO);
     TTF_Init();
     SDL_CreateWindowAndRenderer(1800, 1800, 0, &window, &renderer);
+    std::cerr << "Set Main Loop " << std::endl;
     emscripten_set_main_loop(main_loop, 0, 1);
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
