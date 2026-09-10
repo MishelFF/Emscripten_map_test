@@ -13,6 +13,7 @@
     <h1>WebAssembly Карта</h1>
     
     <input type="file" id="fileLoader" onchange="uploadFile(this)">
+    <button type="button" onclick="changeModel()">2D/3D</button>
 
 <script type='text/javascript'>
   function uploadFile(input) {
@@ -46,9 +47,28 @@
     // Читаем файл как бинарный массив (подходит для любых файлов/картинок)
     reader.readAsArrayBuffer(file);
   }
+  function changeModel(){
+      Module.ccall(
+       'process_change_model', 
+        null                    
+      );
+  }
+  function resetCanvasElement() {
+    var oldCanvas = document.getElementById('canvas');
+    if (oldCanvas) {
+        var newCanvas = oldCanvas.cloneNode(false); // Клонируем тег без контекста
+        oldCanvas.parentNode.replaceChild(newCanvas, oldCanvas);
+        
+        // Перепривязываем объект Module к новому холсту
+        Module.canvas = newCanvas; 
+    }
+}
 </script>
     <!-- Элемент для графики (если используется SDL/OpenGL) -->
     <canvas id="canvas" oncontextmenu="event.preventDefault()"></canvas>
+   
+    <!--canvas id="canvas2d" style="display:block;"></canvas>
+    <canvas id="canvas3d" style="display:none;"></canvas>-->
 
     <!-- Элемент для вывода текстовых логов (printf) -->
     <textarea id="output" readonly></textarea>

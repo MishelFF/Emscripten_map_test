@@ -5,6 +5,7 @@
 #include <sstream>
 #include <string>
 #include <SDL2/SDL.h>
+#include <SDL2/SDL_hints.h>
 #include <SDL2/SDL_render.h>
 #include <SDL2/SDL_ttf.h>
 #include <emscripten.h>
@@ -13,9 +14,12 @@
 
 
 #include <iostream>
-#include <fstream>
 #include <emscripten/emscripten.h>
 #include "miniz.h"
+#include "fieldmodel.h"
+#include "point.h"
+#include "painter2D.h"
+#include "painter3D.h"
 
 bool g_FilesLoaded = false;
 extern "C" {
@@ -58,7 +62,7 @@ void process_uploaded_zip(uint8_t *zip_buffer, int zip_size)
 
         std::cout << "Распаковка: " << file_stat.m_filename << " (" << file_stat.m_uncomp_size << " байт)" << std::endl;
 
-        // Выделяем память под распакованный файл
+       
         size_t uncompressed_size;
         void *pUncomp_data = mz_zip_reader_extract_to_heap(&zip_archive, i, &uncompressed_size, 0);
 
@@ -90,322 +94,40 @@ void process_uploaded_zip(uint8_t *zip_buffer, int zip_size)
     std::cout << "Распаковка завершена! Все файлы теперь доступны в среде WASM." << std::endl;
     g_FilesLoaded=true;
 }
+
+
 }
 
-struct fontSprite { 
-    unsigned int font,code,color,center_color;
-};
-
-struct PointD { double x; double y; };
-struct Point { int x; int y; };
-struct WellDevRec  { double dn; double dw;double nw;double ng;int hourWorkInput;int hourWorkOutput;};
-
-struct WellInfo { 
-    std::string NC,clust;
-   
-    PointD coord,bot; 
-    std::vector<fontSprite> sprites;
-    std::vector<std::string> labels;
-};
 struct MouseState { 
     Point pos,click_pos,last_pos; 
     bool leftButtonDown; 
     bool rightButtonDown; 
 };
-struct ColorScaleItem  { double value; SDL_Color color; };
 
+enum class AppMode { Mode2D, Mode3D, ModeNone };
+AppMode currentMode = AppMode::Mode2D;
 
-typedef std::vector<PointD> PathD;
-typedef std::vector< PathD > PathsD;
-typedef std::vector<std::vector<int>> PathType;
-typedef std::vector<WellInfo> WellsType;
-typedef std::vector<ColorScaleItem> ColorScale;
-SDL_Window* window = nullptr;
-SDL_Renderer* renderer = nullptr;
-    PathsD paths,conts,iso_polygons,iso_paths;
-    PathType pathtypes,conttypes,isotypes,isopathtypes;
-    PointD startPoint;
-    WellsType wells;
+    SDL_Window* window = nullptr;
+    SDL_Renderer* renderer = nullptr;
+    SDL_GLContext glContext = nullptr;
+
     MouseState mouseState;  
-    Point imageOffset={0,0};
-    double scale=1.0;
-    ColorScale colorScale;
-
-bool is_digits(const std::string& str) {
-    return !str.empty() && std::all_of(str.begin(), str.end(), [](unsigned char c) {
-        return std::isdigit(c);
-    });
-}
-std::string trim(const std::string& str) {
-    const std::string whitespace = " \t\n\r\f\v";
-    
-    // Find the first non-whitespace character
-    const auto start = str.find_first_not_of(whitespace);
-    if (start == std::string::npos) {
-        return ""; // The string is completely empty or all whitespace
-    }
-
-    // Find the last non-whitespace character
-    const auto end = str.find_last_not_of(whitespace);
-    
-    // Extract and return the substring
-    return str.substr(start, end - start + 1);
-}
- SDL_Color GetSDLColor(const int color) {
-     SDL_Color sdlColor;
-        sdlColor.b = (color >> 16) & 0xFF;
-        sdlColor.g = (color >> 8) & 0xFF;
-        sdlColor.r = color & 0xFF;
-        sdlColor.a = 255;
-        return sdlColor;
-}
-int loadColorScale(ColorScale& colorScale,const char* filename) {
-    std::ifstream file(filename);
-    if (!file.is_open()) {
-        std::cerr << "Error: Unable to open file " << filename << std::endl;
-        return 1; // Return error code
-    }
-    colorScale.clear();
-    ColorScaleItem current_item;
-    int c=0;
-    std::string line,buf;
-    while (std::getline(file,line )) {
-        std::stringstream ss(line);
-        std::getline(ss, buf, ';');
-        current_item.value=std::stod(buf);
-        std::getline(ss, buf, '\n');
-        c=std::stoi(buf);
-        current_item.color= GetSDLColor(c);
-//        current_item.color.b=c>>16;
-//        current_item.color.g=(c>>8)&0xff;
-//        current_item.color.r=c&0xff;
-        colorScale.push_back(current_item);
-    }    
-    file.close();
-    g_FilesLoaded = true; 
-    return 0; // Success 
-}
-int loadWellsFile(WellsType& wells,const char* filename) {
-    std::ifstream file(filename);
-    std::string line;
-    if (!file.is_open()) {
-        std::cerr << "Error: Unable to open file " << filename << std::endl;
-        return 1; // Return error code
-    }
-    wells.clear();
-    WellInfo current_well;
-    std::string buf;
-    while (std::getline(file,line)){
-        std::stringstream ss(line);
-        fontSprite current_sprite;
-        current_well.sprites.clear();
-        current_well.labels.clear();
-        std::getline(ss, current_well.NC, ';');
-        std::getline(ss, current_well.clust, ';');
-        std::getline(ss, buf, ';');current_well.coord.x=std::stod(buf);
-        std::getline(ss, buf, ';');current_well.coord.y=std::stod(buf);
-        std::getline(ss, buf, ';');current_well.bot.x=std::stod(buf);
-        std::getline(ss, buf, ';');current_well.bot.y=std::stod(buf);
-        std::getline(ss, buf, ';');current_sprite.code=std::stoi(buf);
-        std::getline(ss, buf, ';');current_sprite.color=std::stoi(buf);
-        std::getline(ss, buf, ';');current_sprite.center_color=std::stoi(buf);
-        current_well.sprites.push_back(current_sprite);
-        for (int i=0;i<3;i++) {
-            std::getline(ss, buf, ';');
-            buf=trim(buf);
-            if (buf.size()>0) current_well.labels.push_back(buf);
-        }
-        WellDevRec current_dev;
-        std::getline(ss, buf, ';');current_dev.dn=std::stod(buf);
-        std::getline(ss, buf, ';');current_dev.dw=std::stod(buf);
-        std::getline(ss, buf, ';');current_dev.nw=std::stod(buf);
-        std::getline(ss, buf, ';');current_dev.ng=std::stod(buf);
-        wells.push_back(current_well);
-    }
-    file.close();
-    return 0; // Success 
-}
-
-int loadPaths(PathsD& paths, PathType& pathtypes,const char* filename) {
-    std::ifstream file(filename);
-    if (!file.is_open()) {
-        std::cerr << "Error: Unable to open file " << filename << std::endl;
-        return 1; // Return error code
-    }
-    paths.clear();
-    pathtypes.clear();
-    PathD current_path;
-    double x, y;
-    int n=0;
-    std::string line;
-    std::vector<int> t;
-    while (std::getline(file,line)) if (!line.empty()){
-        std::cerr << line << std::endl;
-        size_t pos = 0;size_t start=0;
-        pos = line.find_first_of(",;");start=pos+1;
-        n=std::stoi(line.substr(0, pos));
-        t.clear();
-        current_path.clear();
-        while (pos< (line.size()-1)) {
-            pos = line.find_first_of(",;",start);
-            if (pos==std::string::npos) {pos=line.size()-1;}
-            std::string subs=trim(line.substr(start, pos-start));
-            //std::cerr << subs << std::endl;
-            if (is_digits(subs)) {
-                t.push_back(std::stoi(subs));
-            }
-            start=pos+1;
-        }
-        std::cerr<<"n= " << n <<" type= " << t[0] << std::endl;
-        for(int i=0;i<n;i++){
-                file >> x >> y;
-                PointD pt;pt.x=x;pt.y=y;
-                current_path.push_back(pt);
-//               std::cerr << "x= "<<x<< "  y="<<y<<std::endl;
-        }
-        file.ignore(); 
-        if (!current_path.empty()) {
-                paths.push_back(current_path);
-                pathtypes.push_back(t);
-        }
-    }
-    file.close();
-    return 0; // Success 
-}
-void toScreen(const PointD& dot,int *x,int *y) {
-    *x=(int)((dot.y-startPoint.y)*scale/10+100)+imageOffset.x;
-    *y=(int)(1000-(dot.x-startPoint.x)*scale/10)+imageOffset.y;
-} 
-void drawPath(const PathsD& paths,const PathType& pathtypes) {
-    std::vector<SDL_Point> vertices;
-    std::vector<SDL_Vertex> strips;
-    for (int i = 0; i < paths.size(); i++) {
-        vertices.clear();
-        for (int j = 0; j < paths[i].size(); j++) {
-            
-//            float vy=2000-(paths[i][j].x-startPoint.x)/10;
-//            float vx=(paths[i][j].y-startPoint.y)/10+100;
-//            vx=(vx>0)?vx:0;
-//            vy=(vy>0)?vy:0;
-            int vx,vy;toScreen(paths[i][j],&vx,&vy);
-            SDL_Point dot={(int)vx,(int) vy};
-            vertices.push_back(dot);
-        }
-        SDL_SetRenderDrawColor(renderer, 0, 0, 50, 255);
-        if (pathtypes[i][0]<2) { SDL_SetRenderDrawColor(renderer, 0, 0, 200, 255);}
-        if ((pathtypes[i][0]>1)&&(pathtypes[i][0]<4)) { SDL_SetRenderDrawColor(renderer, 255, 0, 0, 255);}
-        if ((pathtypes[i][0]==11)) { SDL_SetRenderDrawColor(renderer, 255, 0, 0, 255);}
-        if ((pathtypes[i][0]==10)) { SDL_SetRenderDrawColor(renderer, 255, 128, 0, 255);}
-        if ((pathtypes[i][0]>999)) { SDL_SetRenderDrawColor(renderer, 150, 150, 0, 150);}
-        if ((pathtypes[i][0]>999)||(pathtypes[i][0]==11)||(pathtypes[i][0]==10)||(pathtypes[i][0]<7)) { 
-            SDL_RenderDrawLines(renderer,  vertices.data(), vertices.size());
-        }
-    }    
-}    
-void fillPath(const PathsD& paths,const PathType& pathtypes) {
-    std::vector<SDL_Vertex> vertices;
-    std::vector<int> indices;
-    for (int i = 0; i < paths.size(); i++) {
-        vertices.clear();
-        indices.clear();
-        for (int j = 0; j < paths[i].size(); j++) {
-//            float vy=2000-(paths[i][j].x-startPoint.x)/10;
-//            float vx=(paths[i][j].y-startPoint.y)/10+100;
-//            vx=(vx>0)?vx:0;
-//            vy=(vy>0)?vy:0;
-            int vx,vy;toScreen(paths[i][j],&vx,&vy);
-            int level=pathtypes[i][0];
-            if (level>(colorScale.size()-1)) {level=colorScale.size()-1;}
-            SDL_Vertex dot={{(float)vx, float(vy)}, colorScale[level].color,   {0.0f, 0.0f}};
-            vertices.push_back(dot);
-            if (j>1){indices.push_back(j-2);indices.push_back(j-1);indices.push_back(j);}
-            
-        }
-        SDL_RenderGeometry(renderer, NULL, vertices.data(), vertices.size(), indices.data(), indices.size());
-//        vertices.clear();
-//        vertices.push_back({{0.0f+100*i, 0.0f}, {(unsigned char)(i*20), 0, 0, 255},   {0.0f, 0.0f}});
-//        vertices.push_back({{500.0f+100*i, 000.0f}, {(unsigned char)(i*20), 0, 0, 255},   {0.0f, 0.0f}});
-//        vertices.push_back({{250.0f+1000*i, 500.0f}, {(unsigned char)(i*20), 0, 0, 255},   {0.0f, 0.0f}});
-//        SDL_RenderGeometry(renderer, NULL, vertices.data(), vertices.size(), NULL, 0);
-    }
-
-}
-void DrawFilledCircle(SDL_Renderer* renderer, int centreX, int centreY, int radius) {
-    int x = radius - 1;
-    int y = 0;
-    int tx = 1;
-    int ty = 1;
-    int error = tx - (radius << 1);
-
-    while (x >= y) {
-        // Draw horizontal lines across matching symmetrical pairs
-        SDL_RenderDrawLine(renderer, centreX - x, centreY - y, centreX + x, centreY - y);
-        SDL_RenderDrawLine(renderer, centreX - x, centreY + y, centreX + x, centreY + y);
-        SDL_RenderDrawLine(renderer, centreX - y, centreY - x, centreX + y, centreY - x);
-        SDL_RenderDrawLine(renderer, centreX - y, centreY + x, centreX + y, centreY + x);
-
-        if (error <= 0) {
-            y++;
-            error += ty;
-            ty += 2;
-        }
-        if (error > 0) {
-            x--;
-            tx += 2;
-            error += tx - (radius << 1);
-        }
-    }
-}
-void renderText(const std::string& message, int x, int y, TTF_Font* font, SDL_Color color, SDL_Renderer* renderer,Point& textSize ) {
-    SDL_Surface* textSurface = TTF_RenderUTF8_Blended (font, message.c_str(), color);
-    if (!textSurface) {
-        std::cerr << "Unable to render text surface! SDL_ttf Error: " << TTF_GetError() << std::endl;
-        return;
-    }
-    SDL_Texture* textTexture = SDL_CreateTextureFromSurface(renderer, textSurface);
-    if (!textTexture) {
-        std::cerr << "Unable to create texture from rendered text! SDL Error: " << SDL_GetError() << std::endl;
-        SDL_FreeSurface(textSurface);
-        return;
-    }
-    int textWidth = textSurface->w;
-    int textHeight = textSurface->h;
-    textSize.x=textWidth;textSize.y=textHeight;
-    SDL_Rect destRect = { x, y, textWidth, textHeight };
-    SDL_RenderCopy(renderer, textTexture, nullptr, &destRect);
-    SDL_FreeSurface(textSurface);
-    SDL_DestroyTexture(textTexture);
-}
-void drawWells(const WellsType& wells) {
-    TTF_Font* font = TTF_OpenFont("arial.ttf", 12);
-    TTF_Font* spritesfont = TTF_OpenFont("FWELLS__.ttf", 30);
-    Point textSize;
-    for (int i = 0; i < wells.size(); i++) {
-        int vx,vy;toScreen(wells[i].coord,&vx,&vy);
-        SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
-//        DrawFilledCircle(renderer, vx, vy, 4);
-        char buf[2]=" ";
-        for (int j = wells[i].sprites.size()-1; j >=0 ; j--){ 
-            buf[0]=wells[i].sprites[j].code;
-            renderText(buf, vx-22, vy-15, spritesfont,  GetSDLColor(wells[i].sprites[j].color), renderer,textSize);
-        }
-        renderText(wells[i].NC, vx+5, vy-18, font, {0, 0, 0, 255}, renderer,textSize);
-        if (wells[i].labels.size()>0) {
-            SDL_RenderDrawLine(renderer, vx+15, vy, vx+5+textSize.x, vy);
-            for (int j = 0; j < wells[i].labels.size(); j++) renderText(wells[i].labels[j], vx+5, vy+textSize.y*j, font, {0, 0, 0, 255}, renderer,textSize);
-        } 
-    }
-    TTF_CloseFont(spritesfont);
-    TTF_CloseFont(font);
-}      
+    std::unique_ptr<Painter2D> painter2D;
+    std::unique_ptr<Painter3D> painter3D;
 void move_image(int dx,int dy) {
-    imageOffset.x+=dx;imageOffset.y+=dy;
+    if (currentMode==AppMode ::Mode3D){painter3D->mouseMove(dx,dy);}
+    else {painter2D->changeImageOffset(dx,dy);}
 }
 void scale_image(int dx,int dy) {
-    scale+=dy/100.0;
-    scale=std::max(0.001,scale);
-    scale=std::min(100.0,scale);
+    if (currentMode==AppMode ::Mode3D){
+        painter3D->mouseScale(dy/100.0);
+    }
+    else painter2D->changeScale(dy/100.0);
 }
+void reset_image() {
+    if (currentMode==AppMode ::Mode3D){painter3D->resetCamera();}
+}
+
 void poll_mouse() {
      SDL_Event event;
     // Poll all pending events for the current frame
@@ -413,10 +135,6 @@ void poll_mouse() {
         switch (event.type) {
             // 1. Mouse Movement
             case SDL_MOUSEMOTION:
-                // Relative motion (useful for first-person cameras)
-                // event.motion.xrel, event.motion.yrel
-                
-                // Absolute positions on the canvas
                 mouseState.pos.x = event.motion.x;
                 mouseState.pos.y = event.motion.y;
                 if (mouseState.leftButtonDown) {
@@ -455,105 +173,127 @@ void poll_mouse() {
 
             // 4. Mouse Wheel / Scroll
             case SDL_MOUSEWHEEL:
-                scale_image(0,event.wheel.y*2);
+                scale_image(0,event.wheel.y*5);
                 break;
         }
     }
 }
-int loadModel()
-{
-    if (loadPaths(iso_paths, isopathtypes,"/IsoPolygons.txt")) return 1; // Error 
-    if (loadPaths(paths, pathtypes,"/Isolines.txt")) return 1; // Error 
-    if (loadPaths(conts, conttypes,"/Conturs.txt")) return 1; // Error 
-    if (loadWellsFile(wells,"/Wells.txt")) return 1; // Error 
-    if (loadColorScale(colorScale,"/ColorScale.txt")) return 1; // Error 
-    for (int i = 0; i < pathtypes.size(); i++) {pathtypes[i][0]=1000;}
-    gpc_polygon aPolygon={};
-    gpc_vertex_list aVertexList={};
-    gpc_tristrip aTriStrip={};
-    std::vector<SDL_Point> vertices;
-    std::cerr << "Input types "<< isopathtypes.size() << std::endl;
-/*    for (int i = 0; i < isopathtypes.size(); i++) {
-        std::cerr << "Types "<< i<<"Nums "<<isopathtypes[i].size()<<":";
-        for (int j = 0; j < isopathtypes[i].size(); j++)  std::cerr <<isopathtypes[i][j]<<"  "; 
-        std::cerr << std::endl;
-    }*/
-    iso_polygons.clear();
-    isotypes.clear();
-    startPoint={0,0};
-    int prev_poly=-1;
-    aPolygon.num_contours = 0;
-    int i=0;
-    while( (i < iso_paths.size()))if (isopathtypes[i][0]<50) {
-        prev_poly=isopathtypes[i][0];
-        while((i < iso_paths.size())&&(isopathtypes[i][0]==prev_poly)){
-            aVertexList.num_vertices = iso_paths[i].size();
-            aVertexList.vertex = (gpc_vertex*)iso_paths[i].data();
-            gpc_add_contour(&aPolygon, &aVertexList, isopathtypes[i][2]);       
-            i++;
-        }
-        gpc_polygon_to_tristrip(&aPolygon,&aTriStrip);
-        gpc_free_polygon(&aPolygon);aPolygon.num_contours = 0;
-      
-        for (int j = 0; j < aTriStrip.num_strips; j++) {
-            PathD current_path;
-            for (int k = 0; k < aTriStrip.strip[j].num_vertices; k++) {
-                double x=aTriStrip.strip[j].vertex[k].x;double y=aTriStrip.strip[j].vertex[k].y;
-                if(startPoint.x==0){startPoint={x,y};}else{startPoint.x=std::min(x,startPoint.x);startPoint.y=std::min(y,startPoint.y);}
-                current_path.push_back({x,y});
-            }
-            if (!current_path.empty()) {iso_polygons.push_back(current_path);isotypes.push_back(isopathtypes[i-1]);}
-            
-        }
-        gpc_free_tristrip(&aTriStrip);
-    }
-    else i++;
-    std::cerr << "Isolines polygons "<< iso_polygons.size() << std::endl;
-/*    for (int i = 0; i < iso_polygons.size(); i++) {
-        std::cerr << "Isoline"<< i<<"Polygons"<<iso_polygons[i].size() << std::endl;
-        for (int j = 0; j < iso_polygons[i].size(); j++)  std::cerr << iso_polygons[i][j].x<< "   "<<iso_polygons[i][j].y << std::endl;
-    }*/
-    std::cerr << "Model Loaded " << std::endl;
-    return 0;
- 
-}
 
 void main_loop() {
-//    std::vector<SDL_Vertex> vertices;
     poll_mouse();    
-    SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
-    SDL_RenderClear(renderer);
-    fillPath(iso_polygons,isotypes);
-    drawPath(paths,pathtypes);
-    drawPath(conts,conttypes);
-    drawWells(wells);
-    SDL_RenderPresent(renderer);
+    if (currentMode == AppMode::Mode2D) {
+        SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
+        SDL_RenderClear(renderer);
+        painter2D->draw(renderer);
+        SDL_RenderPresent(renderer);
+    }
+    else if(currentMode == AppMode::Mode3D) painter3D->draw();
     if(g_FilesLoaded) {
         std::cerr << "Start load model " << std::endl;
-        loadModel();
+        if (currentMode == AppMode::Mode2D) painter2D->loadModel();
+        else painter3D->loadModel();       
+        g_FilesLoaded = false; 
     }
-    g_FilesLoaded = false; 
- }    
+ }   
+
+void initMode2D()
+{
+    window = SDL_CreateWindow("App", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 1800, 1800, 0);
+    renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
+    painter2D=std::make_unique<Painter2D>();
+    painter2D->loadModel();
+    painter2D->prepareScene();
+}
+void doneMode2D()
+{
+    painter2D.reset();
+    if (renderer) { SDL_DestroyRenderer(renderer); renderer = nullptr; }
+    if (window)   { SDL_DestroyWindow(window); window = nullptr; }
+}
+
+void initMode3D()
+{
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
+    SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
+    window = SDL_CreateWindow("App", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,1800, 1800, SDL_WINDOW_OPENGL);
+    glContext = SDL_GL_CreateContext(window);
+    if (glContext == NULL) {
+        std::cerr << "Error create 3D context: " << SDL_GetError() << std::endl;
+        return;
+    }
+    glEnable(GL_DEPTH_TEST);
+    glEnable(GL_CULL_FACE);
+    painter3D = std::make_unique<Painter3D>();
+    painter3D->init();
+    painter3D->loadModel();
+    painter3D->prepareScene();
+    painter3D->setProjectionMatrix(45.0f, 1800.0f / 1800.0f, 0.1f, 100.0f);
+    painter3D->setCam();
+}
+
+void doneMode3D()
+{
+    painter3D.reset();
+    if (glContext) { SDL_GL_DeleteContext(glContext); glContext = nullptr; }
+    if (window)    { SDL_DestroyWindow(window); window = nullptr; }
+}
+
+extern "C" {
+EMSCRIPTEN_KEEPALIVE
+void process_change_model(){
+    if (currentMode == AppMode::Mode2D)
+    {
+        currentMode = AppMode::ModeNone;
+        doneMode2D();
+        EM_ASM({
+            resetCanvasElement();
+        });        
+        std::cerr << "2D Mode done " << std::endl;
+        initMode3D();
+        std::cerr << "3D Mode init " << std::endl;
+        currentMode = AppMode::Mode3D;
+    }
+    else if (currentMode == AppMode::Mode3D){
+        currentMode = AppMode::ModeNone;
+        doneMode3D();
+        EM_ASM({
+            resetCanvasElement();
+        });
+        std::cerr << "3D Mode done " << std::endl;
+        initMode2D();
+        std::cerr << "2D Mode init " << std::endl;
+        currentMode = AppMode::Mode2D;
+    }
+    else{
+        initMode2D();
+        currentMode = AppMode::Mode2D;
+    }
+}
+
+}
 
 int main(int argc, char** argv)
 {
-     loadModel();
-  //  iso_polygons.clear();
-  //  for (int i = 0; i < paths.size(); i++) {
-  //      PathD current_path;
-  //      Triangulate(paths[i], 0, current_path, true);
-  //      iso_polygons.push_back(current_path);
-  //  }
-
-//    return 0;
+  
     SDL_Init(SDL_INIT_VIDEO);
     TTF_Init();
-    SDL_CreateWindowAndRenderer(1800, 1800, 0, &window, &renderer);
+    currentMode = AppMode::Mode3D;
+    currentMode = AppMode::Mode2D;
+    if (currentMode == AppMode::Mode2D) initMode2D();
+    else initMode3D();
     std::cerr << "Set Main Loop " << std::endl;
+    SDL_version version;
+    SDL_GetVersion(&version);
+
+    std::cerr <<"SDL "<<version.major<<"."<<version.minor<<" ."<<version.patch<< std::endl;
     emscripten_set_main_loop(main_loop, 0, 1);
-    SDL_DestroyRenderer(renderer);
-    SDL_DestroyWindow(window);
+    if (currentMode == AppMode::Mode2D) doneMode2D();
+    else doneMode3D();
+
     TTF_Quit();
     SDL_Quit();
     return 0;
 }
+
