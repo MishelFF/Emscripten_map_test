@@ -271,7 +271,6 @@ void process_change_model(){
         currentMode = AppMode::Mode2D;
     }
 }
-
 }
 
 int main(int argc, char** argv)
